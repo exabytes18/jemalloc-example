@@ -1,9 +1,99 @@
-jemalloc is built with different configure options on OSX than other operating systems. By default, the jemalloc static library will include malloc/calloc/free/etc symbols. Simply including the .a static binary is enough to replace the libc allocator with jemalloc. However, on OSX, the default is to build "je_" prefixed variants of malloc/calloc/free/etc. OSX uses a slightly different pattern of malloc zones, which is the preferred way to override the default allocator. As such, jemalloc will register itself as the default zone, but it can only do so by itself if it was loaded as a shared library (via __attribute__((constructor))).
-
-If you ./configure jemalloc with --with-jemalloc-prefix="" on OSX and static link the library, your malloc's will be handled by jemalloc.
+jemalloc is built with different ./configure options on OSX than other operating systems. By default, the jemalloc static library will include malloc/calloc/free/etc symbols. Simply including the .a static binary is enough to replace the glibc allocator with jemalloc. However, on OSX, the default is to build "je_" prefixed variants of malloc/calloc/free/etc. OSX uses a slightly different pattern of "malloc zones", which is the preferred way to override the default allocator. As such, jemalloc will register itself as the default zone, but it can only do so if the library constructor (i.e. __attribute__((constructor))) is invoked. Since we aren't using jemalloc as a shared library nor are there any references to symbols in the library, the library is never loaded, the constructor is never invoked and libc's malloc is never replaced by jemalloc.
 
 If you ./configure jemalloc with the default options on OSX, static link the library and have no references to any "je_" functions, you'll notice that gcc actually strips out the jemalloc library entirely.
 
+If you ./configure jemalloc with --with-jemalloc-prefix="" on OSX and static link the library, your malloc's will be handled by jemalloc. However, dynamically linked libraries will still use the default system zone. That is, any *.so files that get dynamically linked to your application will not use jemalloc, even if the main object file has been statically linked to jemalloc. This is different from linux. On linux, if the main object file is statically linked to jemalloc, then all malloc's performed by libraries dynamically linked to your application will go through jemalloc.
+
+	OSX (shared library):
+		$ ./testing
+		malloc from main object file
+		yay jemalloc!!
+		free'd from main object file
+
+		Malloc from shared library
+		free'd from shared library
+
+	Linux (shared library):
+		$ ./testing
+		malloc from main object file
+		yay jemalloc!!
+		free'd from main object file
+
+		Malloc from shared library
+		yay jemalloc!!
+		free'd from shared library
+
+	OSX (static library):
+		$ ./testing
+		malloc from main object file
+		yay jemalloc!!
+		free'd from main object file
+
+		Malloc from static library
+		yay jemalloc!!
+		free'd from static library
+
+	Linux (static library):
+		$ ./testing
+		malloc from main object file
+		yay jemalloc!!
+		free'd from main object file
+
+		Malloc from static library
+		yay jemalloc!!
+		free'd from static library
 
 
-It seems that blindly replacing libc with jemalloc could be dangerous: https://github.com/antirez/redis/commit/d174eed5d7496b6af767f9c814d93832e9be0c3a.
+tcmalloc docs have some interesting details regarding OSX allocators:
+http://google-perftools.googlecode.com/svn/tags/google-perftools-1.8/src/libc_override_osx.h:
+	// 1) We used to use the normal 'override weak libc malloc/etc'
+	// technique for OS X.  This is not optimal because mach does not
+	// support the 'alias' attribute, so we had to have forwarding
+	// functions.  It also does not work very well with OS X shared
+	// libraries (dylibs) -- in general, the shared libs don't use
+	// tcmalloc unless run with the DYLD_FORCE_FLAT_NAMESPACE envvar.
+	//
+	// 2) Another approach would be to use an interposition array:
+	//      static const interpose_t interposers[] __attribute__((section("__DATA, __interpose"))) = {
+	//        { (void *)tc_malloc, (void *)malloc },
+	//        { (void *)tc_free, (void *)free },
+	//      };
+	// This requires the user to set the DYLD_INSERT_LIBRARIES envvar, so
+	// is not much better.
+	//
+	// 3) Registering a new malloc zone avoids all these issues:
+	//  http://www.opensource.apple.com/source/Libc/Libc-583/include/malloc/malloc.h
+	//  http://www.opensource.apple.com/source/Libc/Libc-583/gen/malloc.c
+	// If we make tcmalloc the default malloc zone (undocumented but
+	// possible) then all new allocs use it, even those in shared
+	// libraries.  Allocs done before tcmalloc was installed, or in libs
+	// that aren't using tcmalloc for some reason, will correctly go
+	// through the malloc-zone interface when free-ing, and will pick up
+	// the libc free rather than tcmalloc free.  So it should "never"
+	// cause a crash (famous last words).
+	//
+	// 4) The routines one must define for one's own malloc have changed
+	// between OS X versions.  This requires some hoops on our part, but
+	// is only really annoying when it comes to posix_memalign.  The right
+	// behavior there depends on what OS version tcmalloc was compiled on,
+	// but also what OS version the program is running on.  For now, we
+	// punt and don't implement our own posix_memalign.  Apps that really
+	// care can use tc_posix_memalign directly.
+
+
+
+# View exported symbols (remember in C, "static" means don't export the symbol)
+nm main
+
+# Dissemble binary (symbolic addresses)
+otool -tV main
+
+# Dissemble (raw addresses [notice that "callq _malloc" points to code within our same binary... the static linking worked!!])
+otool -tv main
+
+# View dynamic library dependencies
+otool -L main
+
+
+
+So what's actually happening when we include jemalloc as a static library is that the linker resolves the _malloc symbol at link time (before the dynamic linker comes in during runtime).
