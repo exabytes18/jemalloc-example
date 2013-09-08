@@ -1,0 +1,9 @@
+jemalloc is built with different configure options on OSX than other operating systems. By default, the jemalloc static library will include malloc/calloc/free/etc symbols. Simply including the .a static binary is enough to replace the libc allocator with jemalloc. However, on OSX, the default is to build "je_" prefixed variants of malloc/calloc/free/etc. OSX uses a slightly different pattern of malloc zones, which is the preferred way to override the default allocator. As such, jemalloc will register itself as the default zone, but it can only do so by itself if it was loaded as a shared library (via __attribute__((constructor))).
+
+If you ./configure jemalloc with --with-jemalloc-prefix="" on OSX and static link the library, your malloc's will be handled by jemalloc.
+
+If you ./configure jemalloc with the default options on OSX, static link the library and have no references to any "je_" functions, you'll notice that gcc actually strips out the jemalloc library entirely.
+
+
+
+It seems that blindly replacing libc with jemalloc could be dangerous: https://github.com/antirez/redis/commit/d174eed5d7496b6af767f9c814d93832e9be0c3a.
