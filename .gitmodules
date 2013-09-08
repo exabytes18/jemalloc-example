@@ -1,0 +1,3 @@
+[submodule "deps/jemalloc"]
+	path = deps/jemalloc
+	url = git://canonware.com/jemalloc.git
